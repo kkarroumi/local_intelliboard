@@ -51,7 +51,8 @@ class completion_report extends report_base {
     }
 
     public function rows(): array {
-        global $DB;
+        global $DB, $CFG;
+        require_once($CFG->libdir . '/completionlib.php');
 
         $params = [];
         $where = 'WHERE u.deleted = 0';
@@ -79,9 +80,17 @@ class completion_report extends report_base {
 
         $rows = $DB->get_records_sql($sql, $params, $this->offset, $this->limit);
         $out = [];
+        $coursecache = [];
         foreach ($rows as $row) {
-            $coursesql = (object) ['id' => (int) $row->courseid, 'enablecompletion' => 1];
-            $percent = \core_completion\progress::get_course_progress_percentage($coursesql, (int) $row->userid);
+            $cid = (int) $row->courseid;
+            if (!isset($coursecache[$cid])) {
+                $coursecache[$cid] = $DB->get_record('course', ['id' => $cid]);
+            }
+            $course = $coursecache[$cid];
+            $percent = null;
+            if ($course && !empty($course->enablecompletion)) {
+                $percent = \core_completion\progress::get_course_progress_percentage($course, (int) $row->userid);
+            }
 
             if (!empty($row->timecompleted)) {
                 $status = get_string('status_completed', 'local_intelliboard');

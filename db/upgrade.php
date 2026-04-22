@@ -31,6 +31,17 @@ defined('MOODLE_INTERNAL') || die();
  * @return bool
  */
 function xmldb_local_intelliboard_upgrade(int $oldversion): bool {
-    // No upgrade steps for the initial release.
+    if ($oldversion < 2026042201) {
+        // Invalidate cached KPI bundle — earlier versions could leave a
+        // half-baked cache behind after exceptions during computation.
+        try {
+            \cache_helper::purge_by_definition('local_intelliboard', 'kpis');
+        } catch (\Throwable $e) {
+            // Cache may not exist yet on fresh installs — safe to ignore.
+        }
+
+        upgrade_plugin_savepoint(true, 2026042201, 'local', 'intelliboard');
+    }
+
     return true;
 }
