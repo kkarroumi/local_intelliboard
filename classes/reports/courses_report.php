@@ -28,6 +28,10 @@ defined('MOODLE_INTERNAL') || die();
 
 /**
  * Aggregates key metrics per course.
+ *
+ * We compute each metric as its own aggregate query (keyed by courseid) and
+ * merge the results in PHP. This avoids correlated subqueries, which are
+ * poorly optimised on MySQL/MariaDB and can break on some hosted databases.
  */
 class courses_report extends report_base {
 
@@ -50,11 +54,16 @@ class courses_report extends report_base {
         ];
     }
 
-    public function rows(): array {
+    /**
+     * Returns the courses matching the current filters (paginated).
+     *
+     * @return array<int, \stdClass>
+     */
+    private function filtered_courses(): array {
         global $DB, $SITE;
 
         $params = ['siteid' => $SITE->id];
-        $where = '';
+        $where = 'c.id <> :siteid';
         if (!empty($this->filters['courseid'])) {
             $where .= ' AND c.id = :courseid';
             $params['courseid'] = (int) $this->filters['courseid'];
@@ -64,56 +73,108 @@ class courses_report extends report_base {
             $params['categoryid'] = (int) $this->filters['categoryid'];
         }
 
-        // Active = users with any daily activity in the filter window.
-        $activesub = 'SELECT DISTINCT userid, courseid FROM {local_intelliboard_daily}';
-        $activeparams = [];
+        return $DB->get_records_sql(
+            "SELECT c.id, c.fullname
+               FROM {course} c
+              WHERE $where
+              ORDER BY c.fullname ASC",
+            $params,
+            $this->offset,
+            $this->limit
+        );
+    }
+
+    public function rows(): array {
+        global $DB;
+
+        $courses = $this->filtered_courses();
+        if (empty($courses)) {
+            return [];
+        }
+
+        [$insql, $inparams] = $DB->get_in_or_equal(array_keys($courses), SQL_PARAMS_NAMED, 'c');
+
+        // Metric 1: enrolments per course.
+        $enrolled = $DB->get_records_sql_menu(
+            "SELECT e.courseid, COUNT(DISTINCT ue.userid)
+               FROM {user_enrolments} ue
+               JOIN {enrol} e ON e.id = ue.enrolid
+              WHERE ue.status = 0 AND e.courseid $insql
+              GROUP BY e.courseid",
+            $inparams
+        );
+
+        // Metric 2: active users per course (optional date window).
+        $activewhere = "courseid $insql";
+        $activeparams = $inparams;
         if (!empty($this->filters['from'])) {
-            $activesub .= ' WHERE day >= :from';
-            $activeparams['from'] = (int) $this->filters['from'];
-            if (!empty($this->filters['to'])) {
-                $activesub .= ' AND day < :to';
-                $activeparams['to'] = (int) $this->filters['to'];
-            }
-        } else if (!empty($this->filters['to'])) {
-            $activesub .= ' WHERE day < :to';
-            $activeparams['to'] = (int) $this->filters['to'];
+            $activewhere .= ' AND day >= :actfrom';
+            $activeparams['actfrom'] = (int) $this->filters['from'];
         }
-        $params = array_merge($params, $activeparams);
-
-        $sql = "SELECT c.id, c.fullname,
-                       (SELECT COUNT(DISTINCT ue.userid)
-                          FROM {user_enrolments} ue
-                          JOIN {enrol} e ON e.id = ue.enrolid
-                         WHERE e.courseid = c.id AND ue.status = 0) AS enrolled,
-                       (SELECT COUNT(DISTINCT a.userid) FROM ($activesub) a WHERE a.courseid = c.id) AS active,
-                       (SELECT COUNT(*) FROM {course_completions} cc
-                         WHERE cc.course = c.id AND cc.timecompleted > 0) AS completed,
-                       (SELECT AVG(gg.finalgrade) FROM {grade_items} gi
-                          JOIN {grade_grades} gg ON gg.itemid = gi.id
-                         WHERE gi.courseid = c.id AND gi.itemtype = 'course') AS avggrade,
-                       (SELECT COALESCE(AVG(sub.total), 0) FROM (
-                           SELECT SUM(timespent) AS total
-                             FROM {local_intelliboard_daily}
-                            WHERE courseid = c.id
-                            GROUP BY userid
-                       ) sub) AS avgtimespent
-                  FROM {course} c
-                 WHERE c.id <> :siteid $where
-              ORDER BY c.fullname ASC";
-
-        $rows = $DB->get_records_sql($sql, $params, $this->offset, $this->limit);
-        foreach ($rows as $row) {
-            $row->fullname     = format_string($row->fullname);
-            $row->avggrade     = $row->avggrade !== null ? round((float) $row->avggrade, 2) : '-';
-            $row->avgtimespent = format_time((int) round((float) $row->avgtimespent));
+        if (!empty($this->filters['to'])) {
+            $activewhere .= ' AND day < :actto';
+            $activeparams['actto'] = (int) $this->filters['to'];
         }
-        return array_values($rows);
+        $active = $DB->get_records_sql_menu(
+            "SELECT courseid, COUNT(DISTINCT userid)
+               FROM {local_intelliboard_daily}
+              WHERE $activewhere
+              GROUP BY courseid",
+            $activeparams
+        );
+
+        // Metric 3: completions per course.
+        $completed = $DB->get_records_sql_menu(
+            "SELECT course, COUNT(*)
+               FROM {course_completions}
+              WHERE timecompleted > 0 AND course $insql
+              GROUP BY course",
+            $inparams
+        );
+
+        // Metric 4: average final grade per course.
+        $avggrade = $DB->get_records_sql_menu(
+            "SELECT gi.courseid, AVG(gg.finalgrade)
+               FROM {grade_items} gi
+               JOIN {grade_grades} gg ON gg.itemid = gi.id
+              WHERE gi.itemtype = 'course' AND gi.courseid $insql
+              GROUP BY gi.courseid",
+            $inparams
+        );
+
+        // Metric 5: average per-user time spent (aggregate by user first, then average).
+        $avgtimespent = $DB->get_records_sql_menu(
+            "SELECT courseid, AVG(total) FROM (
+                SELECT courseid, userid, SUM(timespent) AS total
+                  FROM {local_intelliboard_daily}
+                 WHERE courseid $insql
+                 GROUP BY courseid, userid
+             ) sub
+             GROUP BY courseid",
+            $inparams
+        );
+
+        $out = [];
+        foreach ($courses as $course) {
+            $cid = (int) $course->id;
+            $out[] = (object) [
+                'id'           => $cid,
+                'fullname'     => format_string($course->fullname),
+                'enrolled'     => (int) ($enrolled[$cid] ?? 0),
+                'active'       => (int) ($active[$cid] ?? 0),
+                'completed'    => (int) ($completed[$cid] ?? 0),
+                'avggrade'     => isset($avggrade[$cid]) && $avggrade[$cid] !== null
+                                    ? round((float) $avggrade[$cid], 2) : '-',
+                'avgtimespent' => format_time((int) round((float) ($avgtimespent[$cid] ?? 0))),
+            ];
+        }
+        return $out;
     }
 
     public function count(): int {
         global $DB, $SITE;
         $params = ['siteid' => $SITE->id];
-        $where = '';
+        $where = 'c.id <> :siteid';
         if (!empty($this->filters['courseid'])) {
             $where .= ' AND c.id = :courseid';
             $params['courseid'] = (int) $this->filters['courseid'];
@@ -123,7 +184,7 @@ class courses_report extends report_base {
             $params['categoryid'] = (int) $this->filters['categoryid'];
         }
         return (int) $DB->count_records_sql(
-            "SELECT COUNT(*) FROM {course} c WHERE c.id <> :siteid $where",
+            "SELECT COUNT(*) FROM {course} c WHERE $where",
             $params
         );
     }

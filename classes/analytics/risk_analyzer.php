@@ -169,7 +169,8 @@ class risk_analyzer {
      * @return int|null Null if completion is disabled on the course.
      */
     private static function course_progress(int $userid, int $courseid): ?int {
-        global $DB;
+        global $DB, $CFG;
+        require_once($CFG->libdir . '/completionlib.php');
 
         $course = $DB->get_record('course', ['id' => $courseid], 'id, enablecompletion');
         if (!$course || empty($course->enablecompletion)) {
