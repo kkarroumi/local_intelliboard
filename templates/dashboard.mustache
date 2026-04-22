@@ -1,0 +1,97 @@
+{{!
+    @template local_intelliboard/dashboard
+
+    Main analytics dashboard: KPI cards + chart widgets.
+
+    Classes required for JS:
+      * data-region="local-intelliboard-dashboard" (root)
+      * data-chart="..." on each canvas
+
+    Context variables required for this template:
+      * kpis (array of {key, value, label, icon, variant})
+      * ajaxurl
+      * reportsurl
+      * sesskey
+
+    Example context (json):
+    {
+      "kpis": [
+        {"key": "totalusers", "value": "120", "label": "Active users", "icon": "fa-users", "variant": "primary"}
+      ],
+      "ajaxurl": "/local/intelliboard/ajax.php",
+      "reportsurl": "/local/intelliboard/reports.php",
+      "sesskey": "abc"
+    }
+}}
+<div class="local-intelliboard-dashboard"
+     data-region="local-intelliboard-dashboard"
+     data-ajaxurl="{{ajaxurl}}"
+     data-sesskey="{{sesskey}}">
+
+    <div class="row g-3 mb-4">
+        {{#kpis}}
+            <div class="col-6 col-md-4 col-lg-3">
+                <div class="card h-100 shadow-sm border-{{variant}} local-intelliboard-kpi">
+                    <div class="card-body">
+                        <div class="d-flex align-items-center">
+                            <span class="local-intelliboard-kpi-icon text-{{variant}} me-3">
+                                <i class="fa {{icon}} fa-2x"></i>
+                            </span>
+                            <div>
+                                <div class="local-intelliboard-kpi-value h4 mb-0">{{value}}</div>
+                                <div class="local-intelliboard-kpi-label text-muted small">{{label}}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {{/kpis}}
+    </div>
+
+    <div class="row g-3">
+        <div class="col-12 col-lg-8">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">{{#str}}chart_dailyactivity, local_intelliboard{{/str}}</div>
+                <div class="card-body">
+                    <canvas data-chart="dailyactivity" height="110"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">{{#str}}chart_coursecompletion, local_intelliboard{{/str}}</div>
+                <div class="card-body">
+                    <canvas data-chart="coursecompletion" height="220"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-6">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">{{#str}}chart_topactivities, local_intelliboard{{/str}}</div>
+                <div class="card-body">
+                    <canvas data-chart="topactivities" height="220"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-6">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header">{{#str}}chart_heatmap, local_intelliboard{{/str}}</div>
+                <div class="card-body">
+                    <div data-chart="heatmap" class="local-intelliboard-heatmap"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="text-end mt-3">
+        <a href="{{reportsurl}}" class="btn btn-primary">
+            {{#str}}reports, local_intelliboard{{/str}}
+        </a>
+    </div>
+</div>
+
+{{#js}}
+    require(['local_intelliboard/dashboard'], function(dashboard) {
+        dashboard.init();
+    });
+{{/js}}
